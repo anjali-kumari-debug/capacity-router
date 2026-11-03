@@ -89,6 +89,8 @@ docker run -p 8080:8080 capacity-router
 
 ## Deploy to Render (free)
 
+Live: https://capacity-router.onrender.com (try `/health` or `/capacities`)
+
 [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/anjali-kumari-debug/capacity-router)
 
 `render.yaml` defines a free Docker web service with `/health` as its health check. Pushes to `main` redeploy it automatically. Free services sleep after 15 minutes without traffic, and state is kept in memory, so registered capacities are lost when the service restarts.
