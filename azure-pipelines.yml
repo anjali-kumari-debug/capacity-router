@@ -1,0 +1,87 @@
+# CI/CD for the Capacity Router (Azure DevOps Pipelines).
+# On every push to main: build, run all tests, publish, deploy to Azure App Service,
+# then fail the run if the deployed /health endpoint does not come up.
+
+trigger:
+  branches:
+    include:
+      - main
+
+variables:
+  buildConfiguration: Release
+  # Name of the Azure Resource Manager service connection you create in
+  # Azure DevOps > Project settings > Service connections.
+  azureSubscription: capacity-router-sc
+  # Must match the appName you passed to infra/main.bicep.
+  webAppName: capacityrouter-yourname
+
+stages:
+  - stage: Build
+    jobs:
+      - job: BuildAndTest
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - task: UseDotNet@2
+            displayName: Install .NET 8 SDK
+            inputs:
+              packageType: sdk
+              version: 8.0.x
+
+          - script: >
+              dotnet test tests/CapacityRouter.Tests
+              --configuration $(buildConfiguration)
+              --logger trx
+              --results-directory $(Agent.TempDirectory)/tests
+            displayName: Build and run tests
+
+          - task: PublishTestResults@2
+            displayName: Publish test results
+            condition: succeededOrFailed()
+            inputs:
+              testResultsFormat: VSTest
+              testResultsFiles: $(Agent.TempDirectory)/tests/*.trx
+
+          - script: dotnet publish src/CapacityRouter.Api -c $(buildConfiguration) -o $(Build.ArtifactStagingDirectory)/app
+            displayName: Publish app
+
+          - task: ArchiveFiles@2
+            displayName: Zip app
+            inputs:
+              rootFolderOrFile: $(Build.ArtifactStagingDirectory)/app
+              includeRootFolder: false
+              archiveFile: $(Build.ArtifactStagingDirectory)/app.zip
+
+          - publish: $(Build.ArtifactStagingDirectory)/app.zip
+            artifact: app
+
+  - stage: Deploy
+    dependsOn: Build
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    jobs:
+      - deployment: DeployWebApp
+        pool:
+          vmImage: ubuntu-latest
+        environment: production
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - task: AzureWebApp@1
+                  displayName: Deploy to App Service
+                  inputs:
+                    azureSubscription: ${{ variables.azureSubscription }}
+                    appType: webAppLinux
+                    appName: $(webAppName)
+                    package: $(Pipeline.Workspace)/app/app.zip
+
+                - script: |
+                    for i in 1 2 3 4 5 6 7 8 9 10; do
+                      code=$(curl -s -o /dev/null -w "%{http_code}" "https://$(webAppName).azurewebsites.net/health")
+                      if [ "$code" = "200" ]; then echo "Service is healthy"; exit 0; fi
+                      echo "Attempt $i: /health returned $code, retrying in 15s"
+                      sleep 15
+                    done
+                    echo "Deployment health check failed"
+                    exit 1
+                  displayName: Post-deploy health check

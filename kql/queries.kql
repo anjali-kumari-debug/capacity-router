@@ -1,0 +1,46 @@
+// Kusto (KQL) queries for the Capacity Router.
+// Run them in Azure Portal > your Application Insights resource > Logs.
+
+// 1. Route outcomes over time (routed vs. no capacity vs. invalid), 5-minute buckets
+customMetrics
+| where timestamp > ago(1d)
+| where name == "router.route_requests"
+| extend outcome = tostring(customDimensions["outcome"])
+| summarize requests = sum(valueSum) by outcome, bin(timestamp, 5m)
+| render timechart
+
+// 2. Routing failure rate (%) per hour: are we running out of capacity?
+customMetrics
+| where timestamp > ago(1d)
+| where name == "router.route_requests"
+| extend outcome = tostring(customDimensions["outcome"])
+| summarize total = sum(valueSum),
+            failed = sumif(valueSum, outcome in ("no_healthy_capacity", "insufficient_capacity"))
+            by bin(timestamp, 1h)
+| extend failure_rate_pct = round(100.0 * failed / total, 2)
+| order by timestamp desc
+
+// 3. Endpoint latency: p50 / p95 / p99 per endpoint (find slow endpoints)
+requests
+| where timestamp > ago(1d)
+| summarize count(),
+            p50_ms = percentile(duration, 50),
+            p95_ms = percentile(duration, 95),
+            p99_ms = percentile(duration, 99)
+            by name
+| order by p95_ms desc
+
+// 4. Incident view: capacities that went unhealthy, and when they recovered
+traces
+| where timestamp > ago(1d)
+| where message has "marked unhealthy" or message has "recovered"
+| extend capacity = tostring(customDimensions["CapacityId"])
+| project timestamp, severityLevel, capacity, message
+| order by timestamp desc
+
+// 5. Server errors (5xx) and the exceptions behind them
+requests
+| where timestamp > ago(1d) and toint(resultCode) >= 500
+| join kind=leftouter (exceptions | project operation_Id, type, outerMessage) on operation_Id
+| project timestamp, name, resultCode, duration, type, outerMessage
+| order by timestamp desc
